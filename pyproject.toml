@@ -1,0 +1,34 @@
+[project]
+name = "scrapper"
+version = "0.1.0"
+description = "Multi-source used-car listing scraper. BeForward first; built to aggregate more providers."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "selectolax>=0.3.21",
+    "pydantic>=2.7",
+    "tenacity>=8.3",
+    "typer>=0.12",
+    "PyYAML>=6.0",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+scrapper = "scrapper.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scrapper"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100

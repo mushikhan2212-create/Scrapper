@@ -1,0 +1,36 @@
+# What to scrape. Adding a make/model is a new list entry — no code change.
+#
+# max_pages caps how deep to paginate per target. Start small (1-2) while
+# verifying selectors, then raise it for a full run.
+# filters are passed through to the provider's search query as-is.
+
+sources:
+  beforward:
+    - make: Toyota
+      model: Corolla Axio
+      max_pages: 2
+      enabled: true
+
+    - make: Toyota
+      model: Corolla Fielder
+      max_pages: 2
+      enabled: true
+
+    # Different body type / spec layout — good coverage check for the parser.
+    - make: Nissan
+      model: X-Trail
+      max_pages: 2
+      enabled: true
+
+    - make: Honda
+      model: Fit
+      max_pages: 2
+      enabled: true
+
+    # Example of narrowing with provider search filters.
+    - make: Toyota
+      model: Premio
+      max_pages: 1
+      enabled: false
+      filters:
+        year_from: "2010"
