@@ -17,7 +17,7 @@ import json
 import logging
 import re
 from typing import Any, Iterable
-from urllib.parse import urlencode, urljoin
+from urllib.parse import quote, urljoin
 
 from selectolax.parser import HTMLParser, Node
 
@@ -54,17 +54,21 @@ class BeForwardSource:
     def listing_url(self, target: Target, page: int = 1) -> str:
         """Build a search-results URL for a target.
 
-        Uses the query-string search rather than SEO paths: it accepts filters
-        uniformly and does not depend on a slug that may not exist for every
-        make/model combination.
+        BeForward's search takes PATH SEGMENTS, not a query string:
+
+            /stocklist/keyword=Toyota%20Corolla%20Axio/kmode=and/page=2/sortkey=n
+
+        Keyword search is used in preference to /stocklist/make=1/model=132/,
+        which would require maintaining a map of BeForward's internal numeric
+        make and model ids.
         """
-        params: dict[str, str] = {"make": slugify(target.make)}
-        if target.model:
-            params["model"] = slugify(target.model)
-        params.update(target.filters)
+        keyword = " ".join(part for part in (target.make, target.model) if part)
+        segments = [f"keyword={quote(keyword)}", f"kmode={S.KEYWORD_MODE}"]
+        segments.extend(f"{key}={quote(str(value))}" for key, value in target.filters.items())
         if page > 1:
-            params["page"] = str(page)
-        return f"{self.base_url}{S.STOCKLIST_PATH}/?{urlencode(params)}"
+            segments.append(f"page={page}")
+        segments.append(f"sortkey={S.SORT_KEY}")
+        return f"{self.base_url}{S.STOCKLIST_PATH}/" + "/".join(segments)
 
     # -- Listing pages ---------------------------------------------------
 
@@ -103,17 +107,17 @@ class BeForwardSource:
         )
 
     def _total_pages(self, tree: HTMLParser) -> int | None:
-        """Highest page number linked in the pager."""
+        """Highest page number linked anywhere on the page.
+
+        Scans every anchor rather than a pagination container: on the real
+        markup the CSS selectors matched nothing, while the page numbers were
+        plainly present in hrefs as `/page=11/` path segments.
+        """
         best = 0
-        for selector in S.PAGINATION_SELECTORS:
-            for node in tree.css(selector):
-                value = parse_int(node.text())
-                if value and value > best:
-                    best = value
-                href = node.attributes.get("href") or ""
-                match = re.search(r"[?&]page=(\d+)", href)
-                if match:
-                    best = max(best, int(match.group(1)))
+        for node in tree.css("a[href]"):
+            match = S.PAGE_NUMBER_RE.search(node.attributes.get("href") or "")
+            if match:
+                best = max(best, int(match.group(1)))
         return best or None
 
     def _total_results(self, tree: HTMLParser) -> int | None:
@@ -140,6 +144,7 @@ class BeForwardSource:
         """Build a fully-populated Vehicle from a detail page."""
         tree = HTMLParser(html)
         jsonld = extract_jsonld_vehicle(tree)
+        breadcrumbs = extract_breadcrumbs(tree)
         specs = extract_spec_pairs(tree)
 
         source_id = (
@@ -160,9 +165,37 @@ class BeForwardSource:
 
         self._apply_specs(vehicle, specs)
         self._apply_jsonld(vehicle, jsonld)
+        self._apply_breadcrumbs(vehicle, breadcrumbs)
         self._apply_fallbacks(vehicle, tree, url)
 
         return vehicle.finalize()
+
+    def _apply_breadcrumbs(self, vehicle: Vehicle, crumbs: list[str]) -> None:
+        """Fill model, body type and year from the breadcrumb trail.
+
+        These three appear nowhere else: the Product JSON-LD has only a combined
+        `name`, and the spec table has no model or body-type row at all. The
+        trail runs HOME > TOYOTA > Sedan > Corolla Axio > 2019 > <full title>,
+        so entries are matched by shape rather than by fixed position.
+        """
+        if not crumbs:
+            return
+
+        # Skip the first (HOME) and last (the full listing title) entries.
+        candidates = [c for c in crumbs[1:-1] if c and c.upper() != "HOME"]
+
+        for crumb in candidates:
+            if vehicle.year is None and re.fullmatch(r"(19|20)\d{2}", crumb):
+                vehicle.year = int(crumb)
+                continue
+            if vehicle.body_type is None and crumb.lower() in BODY_TYPES:
+                vehicle.body_type = crumb
+                continue
+            # The make appears in caps; whatever is left is the model.
+            if vehicle.make and crumb.upper() == vehicle.make.upper():
+                continue
+            if vehicle.model is None and not crumb.isdigit():
+                vehicle.model = crumb
 
     def _apply_specs(self, vehicle: Vehicle, specs: dict[str, str]) -> None:
         """Map spec labels onto typed fields. The primary data path."""
@@ -187,7 +220,10 @@ class BeForwardSource:
             return
 
         if vehicle.make is None:
-            vehicle.make = clean_text(_nested(data, "brand", "name") or data.get("brand"))
+            # BeForward publishes the brand in caps ("TOYOTA"); title-case it so
+            # aggregated output across sources is consistent.
+            brand = clean_text(_nested(data, "brand", "name") or data.get("brand"))
+            vehicle.make = brand.title() if brand and brand.isupper() else brand
         if vehicle.model is None:
             vehicle.model = clean_text(_nested(data, "model", "name") or data.get("model"))
         if vehicle.year is None:
@@ -230,6 +266,11 @@ class BeForwardSource:
             if availability and vehicle.availability is None:
                 vehicle.availability = availability.rsplit("/", 1)[-1]
 
+            condition = clean_text(offers.get("itemCondition"))
+            if condition and vehicle.condition is None:
+                # "https://schema.org/UsedCondition" -> "used"
+                vehicle.condition = condition.rsplit("/", 1)[-1].replace("Condition", "").lower()
+
         images = data.get("image")
         if images and not vehicle.images:
             vehicle.images = [images] if isinstance(images, str) else list(images)
@@ -255,7 +296,9 @@ class BeForwardSource:
             for selector in S.FEATURE_SELECTORS:
                 for node in tree.css(selector):
                     text = clean_text(node.text())
-                    if text:
+                    # Action buttons ("Notify Me", "Save Search") sit in markup
+                    # that looks like an equipment list; they are not features.
+                    if text and text.lower() not in S.FEATURE_NOISE:
                         features.append(text)
                 if features:
                     break
@@ -275,12 +318,58 @@ class BeForwardSource:
 
 
 def extract_stock_id(href: str) -> str | None:
-    """Pull a BeForward stock id out of a URL, or None if it is not a detail link."""
+    """Pull a BeForward reference code out of a URL, or None if not a detail link.
+
+    URLs carry the code lowercased (`/ce566767/id/...`) while the site publishes
+    it uppercase (`CE566767`). Normalising to uppercase here keeps ids from the
+    listing page and the detail page identical, which dedupe depends on.
+    """
     for pattern in S.DETAIL_URL_PATTERNS:
         match = pattern.search(href)
         if match:
-            return match.group(1)
+            code = match.group(1)
+            return code.upper() if re.fullmatch(r"[A-Za-z]{2}\d{5,}", code) else code
     return None
+
+
+# Body types BeForward uses in its breadcrumb trail, lowercased for matching.
+BODY_TYPES = {
+    "sedan", "hatchback", "suv", "wagon", "station wagon", "coupe", "convertible",
+    "van", "mini van", "minivan", "truck", "pickup", "bus", "mini bus", "minibus",
+    "cabriolet", "roadster", "mpv", "crossover", "tractor", "trailer", "machinery",
+    "motorcycle", "forklift", "chassis", "light van", "commercial",
+}
+
+
+def extract_breadcrumbs(tree: HTMLParser) -> list[str]:
+    """Names from the BreadcrumbList JSON-LD, in trail order.
+
+    The trail carries model, body type and year, none of which appear in the
+    Product JSON-LD or the spec table.
+    """
+    for node in tree.css("script[type='application/ld+json']"):
+        raw = node.text()
+        if not raw or "BreadcrumbList" not in raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        for candidate in _walk_jsonld(data):
+            if candidate.get("@type") != "BreadcrumbList":
+                continue
+            names: list[str] = []
+            for element in candidate.get("itemListElement") or []:
+                if not isinstance(element, dict):
+                    continue
+                item = element.get("item")
+                name = item.get("name") if isinstance(item, dict) else element.get("name")
+                cleaned = clean_text(name)
+                if cleaned:
+                    names.append(cleaned)
+            if names:
+                return names
+    return []
 
 
 def extract_jsonld_vehicle(tree: HTMLParser) -> dict[str, Any]:

@@ -219,13 +219,15 @@ def parse_drivetrain(value: Any) -> Drivetrain | None:
     t = text.lower().replace(" ", "")
     if "awd" in t or "allwheel" in t:
         return Drivetrain.AWD
-    if "4wd" in t or "4x4" in t or "fourwheel" in t:
+    # BeForward writes "2wheel drive" / "4wheel drive" and never distinguishes
+    # front from rear, so those are the most specific answers available.
+    if "4wd" in t or "4x4" in t or "fourwheel" in t or "4wheel" in t:
         return Drivetrain.FOUR_WD
     if "fwd" in t or "frontwheel" in t or "ff" == t:
         return Drivetrain.FWD
     if "rwd" in t or "rearwheel" in t or "fr" == t:
         return Drivetrain.RWD
-    if "2wd" in t or "4x2" in t:
+    if "2wd" in t or "4x2" in t or "2wheel" in t or "twowheel" in t:
         return Drivetrain.TWO_WD
     return Drivetrain.OTHER
 

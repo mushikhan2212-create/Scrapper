@@ -35,6 +35,14 @@ def _configure_logging(verbose: bool) -> None:
     )
 
 
+def _load_markets(path: Path) -> list[str]:
+    """Destination markets declared in targets.yml (see the note there)."""
+    if not path.exists():
+        return []
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return [str(m) for m in (data.get("destination_markets") or [])]
+
+
 def _load_targets(path: Path, source_name: str) -> list[Target]:
     """Read targets.yml into Target objects."""
     if not path.exists():
@@ -68,6 +76,9 @@ def scrape(
     concurrency: Optional[int] = typer.Option(None, "--concurrency"),
     delay: Optional[float] = typer.Option(None, "--delay", help="Seconds between requests."),
     cache: bool = typer.Option(False, "--cache", help="Reuse cached HTML (dev only)."),
+    markets: Optional[str] = typer.Option(
+        None, "--markets", help="Comma-separated destination markets, overrides targets.yml."
+    ),
     ignore_robots: bool = typer.Option(False, "--ignore-robots", hidden=True),
     dry_run: bool = typer.Option(False, "--dry-run", help="Discover URLs, fetch no details."),
     targets_file: Path = typer.Option(DEFAULT_TARGETS_FILE, "--targets-file"),
@@ -97,8 +108,17 @@ def scrape(
         f"{', '.join(t.key for t in targets)}"
     )
 
+    market_list = (
+        [m.strip() for m in markets.split(",") if m.strip()]
+        if markets is not None
+        else _load_markets(targets_file)
+    )
+
     manifest = asyncio.run(
-        run_scrape(get_source(source), targets, settings, limit=limit, dry_run=dry_run)
+        run_scrape(
+            get_source(source), targets, settings,
+            limit=limit, dry_run=dry_run, markets=market_list,
+        )
     )
 
     if dry_run:

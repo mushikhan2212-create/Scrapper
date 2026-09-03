@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from .export import build_envelope
 from .models import Vehicle
 
 
@@ -22,10 +23,13 @@ def new_run_id() -> str:
 class RunWriter:
     """Owns one run directory and everything written into it."""
 
-    def __init__(self, run_dir: Path, source: str, run_id: str) -> None:
+    def __init__(
+        self, run_dir: Path, source: str, run_id: str, markets: list[str] | None = None
+    ) -> None:
         self.run_dir = run_dir
         self.source = source
         self.run_id = run_id
+        self.markets = list(markets or [])
         self.started_at = datetime.now(timezone.utc)
 
         self.vehicles_ndjson = run_dir / "vehicles.ndjson"
@@ -127,20 +131,33 @@ class RunWriter:
         return manifest
 
     def _write_json_array(self) -> int:
-        """Convert the NDJSON into a JSON array, streaming record by record.
+        """Write vehicles.json in the consuming application's envelope format.
 
-        Building the list in memory first would cap the usable run size at
-        whatever fits in RAM; a large scrape is exactly when that would bite.
+        Streams record by record out of the NDJSON rather than building a list:
+        holding every vehicle in memory would cap the usable run size, which is
+        exactly the wrong limit to hit on a large scrape.
+
+        The NDJSON keeps the full internal record (engine, colour, dimensions,
+        raw specs); this file is the narrower import view. Both come from the
+        same parse, so a field needed later is already on disk.
         """
         count = 0
+        header = build_envelope([], source=self.source, markets=self.markets,
+                                captured_at=self.started_at)
         with self.vehicles_json.open("w", encoding="utf-8") as out:
-            out.write("[\n")
+            out.write("{\n")
+            out.write(f'  "sourceCode": {json.dumps(header["sourceCode"])},\n')
+            out.write(f'  "capturedAtUtc": {json.dumps(header["capturedAtUtc"])},\n')
+            out.write('  "vehicles": [\n')
             for record in iter_ndjson(self.vehicles_ndjson):
+                exported = build_envelope(
+                    [Vehicle.model_validate(record)], source=self.source, markets=self.markets
+                )["vehicles"][0]
                 if count:
                     out.write(",\n")
-                out.write(json.dumps(record, ensure_ascii=False))
+                out.write("    " + json.dumps(exported, ensure_ascii=False))
                 count += 1
-            out.write("\n]\n")
+            out.write("\n  ]\n}\n")
         return count
 
 

@@ -32,31 +32,31 @@ Output lands in `data/beforward/<timestamp>/`:
 
 ---
 
-## ⚠️ First-run step: capture real fixtures
+## Selectors are verified against real HTML
 
-The parsers are written defensively (JSON-LD first, then label-text matching, then CSS),
-but **the selectors have not yet been checked against a real BeForward page** — the
-development environment's network policy blocks beforward.jp.
+`src/scrapper/sources/beforward/fixtures/` holds two real captured pages
+(`listing_corolla.html`, `detail_corolla.html`) and `tests/test_beforward_real_fixtures.py`
+asserts the exact values parsed out of them. When BeForward redesigns, those tests fail and
+name the field that broke.
 
-From a machine that can reach the site, run this once:
+What the real pages corrected (all of it had been guessed wrong without site access):
+
+| | Assumed | Actual |
+|---|---|---|
+| Search URL | `?make=toyota&model=corolla-axio` | `/stocklist/keyword=Toyota%20Corolla%20Axio/kmode=and/page=2/sortkey=n` |
+| Detail URL | `/stocklist/.../detail/123456` | `/toyota/corolla-axio/ce566767/id/16468163/` |
+| Stock id | numeric | reference code `CE566767` |
+| Pagination | `?page=N` | `/page=N/` path segment |
+
+To re-capture after a site change:
 
 ```bash
-uv run scrapper capture "https://www.beforward.jp/stocklist/?make=toyota&model=corolla-axio" -n listing_corolla
-uv run scrapper capture "<a car detail URL from that listing>" -n detail_corolla
-```
-
-That saves the HTML into `src/scrapper/sources/beforward/fixtures/`. Commit those files and
-run `pytest` again: `tests/test_beforward_real_fixtures.py` stops skipping and tells you
-precisely which selectors — if any — need adjusting, naming the spec labels it actually found.
-
-To iterate on a fixture without touching the network:
-
-```bash
+uv run scrapper capture "<listing url>" -n listing_corolla
+uv run scrapper capture "<detail url>" -n detail_corolla
 uv run scrapper inspect src/scrapper/sources/beforward/fixtures/detail_corolla.html
-uv run scrapper inspect src/scrapper/sources/beforward/fixtures/listing_corolla.html --listing
 ```
 
-**Everything that needs changing lives in one file:** `src/scrapper/sources/beforward/selectors.py`.
+**Everything fragile lives in one file:** `src/scrapper/sources/beforward/selectors.py`.
 
 ---
 
@@ -98,43 +98,58 @@ Start with `max_pages: 1` while verifying selectors, then raise it.
 
 ---
 
-## The record schema
+## Output format
 
-Every vehicle has a **typed core** plus a `raw` dict holding every spec row verbatim.
+`vehicles.json` is the import deliverable, in the consuming application's envelope:
 
 ```json
 {
-  "source": "beforward",
-  "source_id": "8811001",
-  "source_url": "https://www.beforward.jp/...",
-  "scraped_at": "2026-09-02T13:35:15Z",
-  "content_hash": "7b37e7997bfc8869",
-  "make": "Toyota", "model": "Corolla Axio", "grade": null,
-  "model_code": "DBA-NRE160", "year": 2015, "month": 3,
-  "body_type": "Sedan", "doors": 4, "seats": 5,
-  "mileage_km": 78000, "engine_cc": 1500,
-  "fuel": "petrol", "transmission": "cvt", "drivetrain": "2wd", "steering": "right",
-  "price": { "currency": "USD", "fob_amount": 4850.0, "raw": "USD 4850" },
-  "availability": "InStock", "location": "Japan",
-  "color": "Pearl White", "chassis_no": "NRE160-71xxxxx",
-  "features": ["Air Conditioner", "Power Steering"],
-  "images": ["https://img.beforward.jp/cars/8811001/1.jpg"],
-  "raw": { "Dimension (L*W*H)": "4360*1695*1460", "Weight": "1090 kg" }
+  "sourceCode": "beforward",
+  "capturedAtUtc": "2026-09-03T09:00:00Z",
+  "vehicles": [
+    {
+      "externalId": "CE566767",
+      "listingUrl": "https://www.beforward.jp/toyota/corolla-axio/ce566767/id/16468163/",
+      "make": "Toyota", "model": "Corolla Axio", "variant": "HYBRID G",
+      "year": 2019, "mileage": 108333, "mileageUnit": "km",
+      "steering": "rhd", "fuelType": "hybrid", "transmission": "automatic",
+      "drivetrain": "2wd",
+      "price": 6180, "currency": "USD", "priceType": "FOB",
+      "chassisNumber": "NKE165-7161960",
+      "portOfLoading": "NAGOYA",
+      "destinationMarkets": ["PK", "KE", "TZ"],
+      "imageUrls": ["https://image-cdn.beforward.jp/large/202608/16468163/CE566767_689f14.jpg"],
+      "isAvailable": true,
+      "lastSeenAtUtc": "2026-09-03T09:00:00Z"
+    }
+  ]
 }
 ```
 
-Three decisions worth knowing about:
+That is a real record from the captured page. Four things about it are worth knowing:
 
-- **`raw` keeps everything.** A spec we do not model yet still reaches your JSON, so needing a
-  new field later never means re-scraping.
-- **`content_hash` excludes `scraped_at`.** Re-scraping an unchanged listing produces the same
-  hash, which gives you change detection for free.
-- **No currency conversion.** Amounts stay in the listing's own currency; a stale FX rate baked
-  into stored records causes more problems than it solves.
+- **`destinationMarkets` is your config, not BeForward's data.** The site publishes nothing of
+  the kind. Set it in `targets.yml` or with `--markets PK,KE`.
+- **`portOfLoading` is BeForward's `Location` field** — the yard the car sits in. There is no
+  port-of-loading field on the site; this is the closest honest proxy, not a confirmed port.
+- **`priceType: "FOB"`** is BeForward's headline-price convention. It is not labelled on the page.
+- **`drivetrain` is only ever `2wd` / `4wd`.** BeForward never distinguishes front from rear, so
+  the scraper does not guess `fwd`/`rwd`.
+- **`isAvailable` is `null` when unknown**, never assumed `true` — not reading an availability
+  field is not evidence a car is in stock.
 
-Only `source`, `source_id` and `source_url` are required — a missing spec never loses a record.
+### The internal record (`vehicles.ndjson`)
 
----
+The NDJSON keeps considerably more per vehicle: `engine_cc`, `engine_code`, `body_type`, `color`,
+`doors`, `seats`, `condition`, `content_hash`, and a `raw` dict holding **every** spec row
+verbatim (`Dimension`, `Weight`, `M3`, …). Two consequences:
+
+- Needing a new field later never means re-scraping — it is already on disk.
+- `content_hash` excludes `scraped_at`, so re-scraping an unchanged listing yields the same hash.
+  Free change detection.
+
+`src/scrapper/export.py` maps the internal record to the envelope; the parsers never know about
+the export shape.
 
 ## Adding another provider (phase 2)
 
@@ -169,12 +184,13 @@ requests. Off by default so real runs get fresh data.
 ## Testing
 
 ```bash
-uv run pytest          # 98 tests, no network required
+uv run pytest          # 132 tests, no network required
 ```
 
 - `test_normalize.py` — value parsing ("2.0L" → 2000cc, "55,000 miles" → 88514 km)
 - `test_beforward_parse.py` — parsing strategy against synthetic fixtures
-- `test_beforward_real_fixtures.py` — pins selectors to the live site (skips until captured)
+- `test_beforward_real_fixtures.py` — pins selectors to real captured BeForward HTML
+- `test_export.py` — the consumer envelope: field set, enums, markets injection
 - `test_pipeline_e2e.py` — the whole pipeline against a local HTTP server: pagination,
   dedupe, resume, error isolation, output correctness
 

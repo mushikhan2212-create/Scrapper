@@ -86,6 +86,7 @@ async def run_scrape(
     limit: int | None = None,
     run_id: str | None = None,
     dry_run: bool = False,
+    markets: list[str] | None = None,
 ) -> dict[str, Any]:
     """Scrape every target and write the run to disk. Returns the manifest."""
     run_id = run_id or new_run_id()
@@ -118,7 +119,7 @@ async def run_scrape(
             }
 
         # Phase 2 — fetch and parse detail pages, writing as we go.
-        with RunWriter(run_dir, source.name, run_id) as writer:
+        with RunWriter(run_dir, source.name, run_id, markets=markets) as writer:
             pending = [i for i in all_items if not writer.already_seen(i.source_id)]
             skipped = len(all_items) - len(pending)
             if skipped:

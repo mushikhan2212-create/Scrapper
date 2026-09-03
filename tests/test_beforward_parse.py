@@ -31,12 +31,13 @@ def source():
 # --- URL building -------------------------------------------------------
 
 
-def test_listing_url_slugifies_and_paginates(source):
+def test_listing_url_uses_keyword_path_segments(source):
+    """Confirmed against a real page: the search is keyword-based, not ?make=&model=."""
     target = Target(make="Toyota", model="Corolla Axio")
     assert source.listing_url(target, 1) == (
-        "https://www.beforward.jp/stocklist/?make=toyota&model=corolla-axio"
+        "https://www.beforward.jp/stocklist/keyword=Toyota%20Corolla%20Axio/kmode=and/sortkey=n"
     )
-    assert "page=3" in source.listing_url(target, 3)
+    assert "/page=3/" in source.listing_url(target, 3)
 
 
 def test_listing_url_passes_through_filters(source):
@@ -45,7 +46,9 @@ def test_listing_url_passes_through_filters(source):
 
 
 def test_listing_url_without_model(source):
-    assert source.listing_url(Target(make="Nissan"), 1).endswith("?make=nissan")
+    assert source.listing_url(Target(make="Nissan"), 1) == (
+        "https://www.beforward.jp/stocklist/keyword=Nissan/kmode=and/sortkey=n"
+    )
 
 
 @pytest.mark.parametrize(

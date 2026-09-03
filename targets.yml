@@ -4,6 +4,14 @@
 # verifying selectors, then raise it for a full run.
 # filters are passed through to the provider's search query as-is.
 
+# destination_markets is stamped onto every exported vehicle for that source.
+# BeForward publishes no per-vehicle market data, so this describes *your*
+# target markets rather than anything claimed by the listing.
+destination_markets:
+  - PK
+  - KE
+  - TZ
+
 sources:
   beforward:
     - make: Toyota

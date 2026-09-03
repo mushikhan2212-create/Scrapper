@@ -16,13 +16,26 @@ import re
 BASE_URL = "https://www.beforward.jp"
 
 # --- URL construction -------------------------------------------------
-# BeForward exposes both a query-string search and SEO-friendly paths. The
-# query form is used because it is stable and lets us add filters cleanly.
+# BeForward's search uses PATH SEGMENTS, not query strings:
+#   /stocklist/keyword=Toyota%20Corolla%20Axio/kmode=and/page=2/sortkey=n
+# Keyword search is used rather than /stocklist/make=1/model=132/ because the
+# latter needs BeForward's internal numeric ids, which would mean scraping and
+# maintaining a make/model id map for no gain.
 STOCKLIST_PATH = "/stocklist"
+KEYWORD_MODE = "and"
+SORT_KEY = "n"
+
+# Page number as a path segment or a query param, whichever the markup uses.
+PAGE_NUMBER_RE = re.compile(r"[/?&]page=(\d+)", re.I)
 
 # --- Detail links on a results page ------------------------------------
 # Matched against every anchor href on the page. The stock id is group 1.
 DETAIL_URL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # The real form, confirmed against a captured page:
+    #   /toyota/corolla-axio/ce566767/id/16468163/
+    # Group 1 is BeForward's own reference code (2 letters + 6 digits), which is
+    # the stable public identifier — the trailing numeric id is internal.
+    re.compile(r"/([a-z]{2}\d{5,})/id/\d+/?", re.I),
     re.compile(r"/stocklist/[^/]*/detail/(\d+)", re.I),
     re.compile(r"/carview/(?:[\w%-]+/)*?(?:bf|bm)?(\d{5,})", re.I),
     re.compile(r"[?&]stkNo=(\d+)", re.I),
@@ -112,10 +125,19 @@ IMAGE_SELECTORS: tuple[str, ...] = (
 )
 
 FEATURE_SELECTORS: tuple[str, ...] = (
-    "ul[class*='equipment'] li",
+    "ul.equipment-list li",
+    "div[class*='equipment'] li",
     "ul[class*='feature'] li",
-    "div[class*='option'] li",
+    "div[class*='option-list'] li",
 )
+
+# Real pages surfaced these action buttons through the feature selectors. Any
+# candidate matching this set is site chrome, not a vehicle feature.
+FEATURE_NOISE = {
+    "favorites", "favourites", "notify me", "save search", "easy inquiry",
+    "add to cart", "compare", "share", "print", "contact us", "inquiry",
+    "login", "sign up", "register", "back to top", "view more", "see more",
+}
 
 # Image URLs matching these are site furniture, not vehicle photos.
 IMAGE_EXCLUDE = re.compile(
@@ -138,6 +160,7 @@ LABEL_MAP: dict[str, str] = {
     "modelcode": "model_code", "modelno": "model_code",
     "year": "year", "modelyear": "year", "regyear": "year",
     "registrationyear": "year", "regyearmonth": "year_month",
+    "registrationyearmonth": "year_month", "manufactureyearmonth": "year_month",
     "yearmonth": "year_month", "firstregistration": "year_month",
     "manufactureyear": "year", "modelyearmonth": "year_month",
     "bodytype": "body_type", "body": "body_type", "cartype": "body_type",
@@ -162,6 +185,7 @@ LABEL_MAP: dict[str, str] = {
     "availability": "availability", "status": "availability", "stockstatus": "availability",
     # descriptive
     "color": "color", "colour": "color", "exteriorcolor": "color", "bodycolor": "color",
+    "extcolor": "color", "extcolour": "color",
     "condition": "condition", "vehiclecondition": "condition", "grade5": "condition",
     "chassisno": "chassis_no", "chassisnumber": "chassis_no", "chassis": "chassis_no",
     "vin": "chassis_no",

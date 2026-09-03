@@ -103,11 +103,27 @@ async def test_full_run_writes_all_expected_outputs(local_source, settings):
     for name in ("vehicles.ndjson", "vehicles.json", "manifest.json", "seen.txt"):
         assert (run_dir / name).exists(), f"{name} missing"
 
-    # NDJSON and the JSON array agree.
+    # The internal NDJSON and the exported envelope agree.
     ndjson_records = list(iter_ndjson(run_dir / "vehicles.ndjson"))
-    array_records = json.loads((run_dir / "vehicles.json").read_text(encoding="utf-8"))
-    assert len(ndjson_records) == len(array_records) == 3
+    envelope = json.loads((run_dir / "vehicles.json").read_text(encoding="utf-8"))
+
+    assert set(envelope) == {"sourceCode", "capturedAtUtc", "vehicles"}
+    assert envelope["sourceCode"] == "beforward"
+    assert len(ndjson_records) == len(envelope["vehicles"]) == 3
     assert {r["source_id"] for r in ndjson_records} == {"8811001", "8811002", "8811003"}
+    assert {v["externalId"] for v in envelope["vehicles"]} == {"8811001", "8811002", "8811003"}
+
+
+async def test_export_envelope_carries_configured_markets(local_source, settings):
+    """Markets are a run-level config value stamped onto every exported vehicle."""
+    await run_scrape(
+        local_source, [Target(make="Toyota", model="Corolla Axio")], settings,
+        run_id="mkt", markets=["PK", "KE"],
+    )
+    envelope = json.loads(
+        (settings.run_dir("beforward", "mkt") / "vehicles.json").read_text(encoding="utf-8")
+    )
+    assert all(v["destinationMarkets"] == ["PK", "KE"] for v in envelope["vehicles"])
 
 
 async def test_records_are_correctly_typed(local_source, settings):
@@ -137,6 +153,7 @@ async def test_manifest_reports_the_run(local_source, settings):
     on_disk = json.loads(
         (settings.run_dir("beforward", "man") / "manifest.json").read_text(encoding="utf-8")
     )
+    assert on_disk["vehicles_written"] == 3
     assert on_disk["source"] == "beforward"
     assert on_disk["targets"] == ["Toyota:Corolla Axio"]
     assert on_disk["http"]["requests"] >= 4  # 1 listing + 3 details
